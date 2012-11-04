@@ -1,0 +1,20 @@
+﻿<VSTemplate Version="3.0.0" xmlns="http://schemas.microsoft.com/developer/vstemplate/2005" Type="Item">
+
+  <TemplateData>
+    <Name>EF6 Code First Pre-generated Views Generator for C#</Name>
+    <Description>A C# T4 template for creating pre-generated views for applications using Entity Framework 6 CodeFirst approach.</Description>
+    <DefaultName>EF6CodeFirstCSharp.Views.tt</DefaultName>
+    <ProjectType>CSharp</ProjectType>
+    <ProvideDefaultName>true</ProvideDefaultName>
+    <Icon />
+    <AppendDefaultFileExtension>true</AppendDefaultFileExtension>
+    <NumberOfParentCategoriesToRollUp>1</NumberOfParentCategoriesToRollUp>
+    <RequiredFrameworkVersion>4.0</RequiredFrameworkVersion>
+    <TemplateID>moozzyk-EF6CodeFirstViewGenT4TemplateCSharp</TemplateID>
+  </TemplateData>
+
+  <TemplateContent>
+    <ProjectItem OpenInEditor="false" SubType="" TargetFileName="$fileinputname$.tt" ReplaceParameters="true">EF6CodeFirstCSharp.Views.tt</ProjectItem>
+  </TemplateContent>
+
+</VSTemplate>
