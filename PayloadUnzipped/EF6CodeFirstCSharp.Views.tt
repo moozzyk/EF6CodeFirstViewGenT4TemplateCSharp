@@ -24,6 +24,7 @@ Usage:
 <#@ import namespace="System.Data.Entity.Core" #>
 <#@ import namespace="System.Data.Entity.Core.Metadata.Edm" #>
 <#@ import namespace="System.Data.Entity.Core.Mapping" #>
+<#@ import namespace="System.Data.Entity.Core.Mapping.ViewGeneration" #>
 <#@ import namespace="System.Data.Entity.Infrastructure" #>
 <#@ import namespace="System.IO" #>
 <#@ import namespace="System.Linq" #>
@@ -41,18 +42,11 @@ Usage:
 		AppDomain.CurrentDomain.SetData("APP_CONFIG_FILE", configFilePath);
 	}
  
-	EdmItemCollection edmItemCollection = null;
-	StoreItemCollection storeItemCollection = null;
-	StorageMappingItemCollection mappingItemCollection = null;
+	var mappingItemCollection = 
+		GetMappingItemCollection(GetEdmx(GetContextType(GetContextTypeName())));
 
-	GetItemCollections(
-		GetEdmx(GetContextType(GetContextTypeName())),
-		out edmItemCollection, 
-		out storeItemCollection, 
-		out mappingItemCollection);
-
-	IList<EdmSchemaError> errors = null;
-	var extentViews = GetExtentViews(mappingItemCollection, out errors);
+	IList<EdmSchemaError> errors = new List<EdmSchemaError>();
+	var viewGroups = mappingItemCollection.GenerateViews(errors);
 
 	if (errors != null)
 	{
@@ -62,7 +56,10 @@ Usage:
 				e => string.Format("{0} {1}: {2}", e.Severity, e.ErrorCode, e.Message).ToArray()));
 	}
 
-	SaveViews(extentViews);
+	// if no errors CodeFirst always generates just one EntityContainer
+	var viewGroup = viewGroups.Single();
+	
+	SaveViews(viewGroup);
 
 	var viewClassName = "ViewsForBaseEntitySets" + Guid.NewGuid().ToString("N");
 #>
@@ -95,11 +92,10 @@ namespace Edm_EntityMappingGeneratedViews
         /// </Summary>
 		public <#= viewClassName #>()
 		{
-            this.EdmEntityContainerName = "<#= edmItemCollection.GetItems<EntityContainer>().Single().Name#>";
-            this.StoreEntityContainerName = "<#= storeItemCollection.GetItems<EntityContainer>().Single().Name#>";		
-            this.HashOverMappingClosure = "<#= ReflectionHelper.GetMappingClosureHash(edmItemCollection.EdmVersion, mappingItemCollection)#>";
-			this.HashOverAllExtentViews = "<#= ReflectionHelper.GenerateHashForAllExtentViewsContent(edmItemCollection.EdmVersion, extentViews)#>";
-            this.ViewCount = <#= extentViews.Count()#>;
+            this.EdmEntityContainerName = "<#= viewGroup.ModelContainerName #>";
+            this.StoreEntityContainerName = "<#= viewGroup.StoreContainerName #>";
+            this.HashOverMappingClosure = "<#= viewGroup.MappingHash #>";
+            this.ViewCount = <#= viewGroup.Views.Count() #>;
 		}
 
 		/// <Summary>
@@ -203,53 +199,28 @@ namespace Edm_EntityMappingGeneratedViews
         mslReader = mappings.Elements().Single(e => e.Name.LocalName == "Mapping").CreateReader();
 	}
 
-	private void GetItemCollections(XDocument edmx, out EdmItemCollection edmItemCollection, out StoreItemCollection storeItemCollection, out StorageMappingItemCollection mappingItemCollection)
+	private StorageMappingItemCollection GetMappingItemCollection(XDocument edmx)
 	{
 		// extract csdl, ssdl and msl artifacts from the Edmx
 		XmlReader csdlReader, ssdlReader, mslReader;
 		SplitEdmx(edmx, out csdlReader, out ssdlReader, out mslReader);
 
 		// Initialize item collections
-		edmItemCollection = new EdmItemCollection(new XmlReader[] { csdlReader });
-		storeItemCollection = new StoreItemCollection(new XmlReader[] { ssdlReader });
-		mappingItemCollection = new StorageMappingItemCollection(edmItemCollection, storeItemCollection, new XmlReader[] { mslReader });
+		var edmItemCollection = new EdmItemCollection(new XmlReader[] { csdlReader });
+		var storeItemCollection = new StoreItemCollection(new XmlReader[] { ssdlReader });
+		return new StorageMappingItemCollection(edmItemCollection, storeItemCollection, new XmlReader[] { mslReader });
 	}
 
-	private Dictionary<string, string> GetExtentViews(StorageMappingItemCollection mappingItemCollection, out IList<EdmSchemaError> errors)
-	{
-		var views = ReflectionHelper.GenerateViews(mappingItemCollection, out errors);
-		if (errors != null && errors.Any())
-		{
-			return null;
-		}
-
-		var extentViews = new Dictionary<string, string>(views.Count);
-
-		foreach(var kvp in views)
-		{
-			extentViews.Add(
-				GetExtentFullName(kvp.Key),
-				kvp.Value.Replace("\r\n", "\n")); // replace accounts for Xml new line normalization
-		}
-
-		return extentViews;
-	}
-
-	private string GetExtentFullName(EntitySetBase entitySet)
-	{
-		return string.Format("{0}.{1}", entitySet.EntityContainer.Name, entitySet.Name);
-	}
-
-	private void SaveViews(Dictionary<string, string> extentViews)
+	private void SaveViews(ContainerMappingViewGroup viewGroup)
 	{
 		var embeddedViewsFileName = Path.ChangeExtension(Host.TemplateFile, "xml");
 		using(var writer = XmlWriter.Create(embeddedViewsFileName, new XmlWriterSettings { Indent = true }))
 		{
 			writer.WriteStartElement("views");
-			foreach(var kvp in extentViews)
+			foreach(var kvp in viewGroup.Views)
 			{
 				writer.WriteStartElement("view");
-				writer.WriteAttributeString("extent", kvp.Key);
+				writer.WriteAttributeString("extent", GetExtentFullName(kvp.Key));
 				writer.WriteCData(kvp.Value);
 				writer.WriteEndElement();
 			}
@@ -258,6 +229,11 @@ namespace Edm_EntityMappingGeneratedViews
 		}
 
 		AddViewsToProject(embeddedViewsFileName);
+	}
+
+	private string GetExtentFullName(EntitySetBase entitySet)
+	{
+		return string.Format("{0}.{1}", entitySet.EntityContainer.Name, entitySet.Name);
 	}
 
 	private string GetConfigFilePath()
@@ -282,46 +258,5 @@ namespace Edm_EntityMappingGeneratedViews
 	{
 		var dte = (EnvDTE.DTE)((IServiceProvider)Host).GetService(typeof(EnvDTE.DTE));
 		return dte.Solution.FindProjectItem(Host.TemplateFile);
-	}
-
-	private static class ReflectionHelper
-	{
-		private static readonly Assembly efAssembly = typeof(StorageMappingItemCollection).Assembly;
-
-		private static readonly MethodInfo generateViewsMethodInfo = 
-			typeof(StorageMappingItemCollection).GetMethod("GenerateEntitySetViews", BindingFlags.NonPublic | BindingFlags.Instance);
-
-		private static readonly MethodInfo getMappingClosureHashMethodInfo =
-            efAssembly.GetType("System.Data.Entity.Core.Mapping.MetadataMappingHasherVisitor", true)
-            .GetMethod("GetMappingClosureHash", BindingFlags.Static | BindingFlags.NonPublic);
-
-        private static readonly MethodInfo generateHashForAllExtentViewsContentMethodInfo =
-            efAssembly.GetType("System.Data.Entity.Core.Common.Utils.MetadataHelper", true)
-            .GetMethod("GenerateHashForAllExtentViewsContent", BindingFlags.Static | BindingFlags.NonPublic);
-
-		public static Dictionary<EntitySetBase, string> GenerateViews(StorageMappingItemCollection mappingItemCollection, out IList<EdmSchemaError> errors)
-		{
-			errors = null;
-			return (Dictionary<EntitySetBase, string>)generateViewsMethodInfo.Invoke(mappingItemCollection, new object[] { errors });
-		}
-
-		public static string GetMappingClosureHash(double schemaVersion, StorageMappingItemCollection mappingItemCollection)
-		{
-			return (string)getMappingClosureHashMethodInfo.Invoke(
-				null, 
-				new object[] 
-				{ 
-					schemaVersion, 
-					// CodeFirst currently creates always one entity container
-					mappingItemCollection.GetItems<GlobalItem>().Single(i => i.GetType().Name == "StorageEntityContainerMapping") 
-				});
-		}
-
-		public static string GenerateHashForAllExtentViewsContent(double schemaVersion, Dictionary<string, string> extentViews)
-		{
-			return (string)generateHashForAllExtentViewsContentMethodInfo.Invoke(
-				null, 
-				new object[] { schemaVersion, extentViews });
-		}
 	}
 #>
