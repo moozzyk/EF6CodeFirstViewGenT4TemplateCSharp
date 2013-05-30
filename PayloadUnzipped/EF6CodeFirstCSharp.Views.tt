@@ -48,7 +48,7 @@ Usage:
 	IList<EdmSchemaError> errors = new List<EdmSchemaError>();
 	var viewGroups = mappingItemCollection.GenerateViews(errors);
 
-	if (errors != null)
+	if (errors != null && errors.Count > 0)
 	{
 		return string.Join(
 			"\r\n",
