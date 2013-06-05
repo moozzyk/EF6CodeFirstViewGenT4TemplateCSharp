@@ -3,7 +3,7 @@
   <Identifier Id="EF6CodeFirstViewGenT4TemplateCSharp.PawelKadluczka.e1b73a59-b9c6-46c0-ac48-7b0584cd2975">
     <Name>EF6 CodeFirst View Generation T4 Template for C#</Name>
     <Author>Pawel Kadluczka</Author>
-    <Version>0.2</Version>
+    <Version>0.2.1</Version>
     <Description xml:space="preserve">C# T4 template for creating pre-generated views for applications using Entity Framework 6 CodeFirst</Description>
     <Locale>1033</Locale>
     <License>ms-pl.txt</License>
