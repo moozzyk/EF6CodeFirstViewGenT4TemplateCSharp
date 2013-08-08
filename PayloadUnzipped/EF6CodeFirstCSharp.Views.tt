@@ -24,6 +24,7 @@ Usage:
 <#@ import namespace="System.Data.Entity.Core" #>
 <#@ import namespace="System.Data.Entity.Core.Metadata.Edm" #>
 <#@ import namespace="System.Data.Entity.Core.Mapping" #>
+<#@ import namespace="System.Data.Entity.Infrastructure.MappingViews" #>
 <#@ import namespace="System.Data.Entity.Core.Mapping.ViewGeneration" #>
 <#@ import namespace="System.Data.Entity.Infrastructure" #>
 <#@ import namespace="System.IO" #>
@@ -41,12 +42,14 @@ Usage:
 	{
 		AppDomain.CurrentDomain.SetData("APP_CONFIG_FILE", configFilePath);
 	}
+
+	var contextType = GetContextType(GetContextTypeName());
  
 	var mappingItemCollection = 
-		GetMappingItemCollection(GetEdmx(GetContextType(GetContextTypeName())));
+		GetMappingItemCollection(GetEdmx(contextType));
 
 	IList<EdmSchemaError> errors = new List<EdmSchemaError>();
-	var viewGroups = mappingItemCollection.Generate(errors);
+	var views = mappingItemCollection.GenerateViews(errors);
 
 	if (errors != null && errors.Count > 0)
 	{
@@ -57,9 +60,7 @@ Usage:
 	}
 
 	// if no errors CodeFirst always generates just one EntityContainer
-	var viewGroup = viewGroups.Single();
-	
-	SaveViews(viewGroup);
+	SaveViews(views);
 
 	var viewClassName = "ViewsForBaseEntitySets" + Guid.NewGuid().ToString("N");
 #>
@@ -71,10 +72,12 @@ Usage:
 //     the code is regenerated.
 // </auto-generated>
 //------------------------------------------------------------------------------
-[assembly: System.Data.Entity.Core.Mapping.EntityViewGenerationAttribute(typeof(Edm_EntityMappingGeneratedViews.<#= viewClassName #>))]
+[assembly: System.Data.Entity.Infrastructure.MappingViews.DbMappingViewCacheTypeAttribute(typeof(<#= contextType.FullName #>), typeof(Edm_EntityMappingGeneratedViews.<#= viewClassName #>))]
 namespace Edm_EntityMappingGeneratedViews
 {
 	using System.Collections.Generic;
+	using System.Data.Entity.Core.Metadata.Edm;
+	using System.Data.Entity.Infrastructure.MappingViews;
 	using System.Reflection;
 	using System.Xml;
 	using System.Xml.Linq;
@@ -82,26 +85,24 @@ namespace Edm_EntityMappingGeneratedViews
     /// <Summary>
     /// The type contains views for EntitySets and AssociationSets that were generated at design time.
     /// </Summary>
-    public sealed class <#= viewClassName #> : System.Data.Entity.Core.Mapping.EntityViewContainer
+    public sealed class <#= viewClassName #> : DbMappingViewCache
 	{
-		private static List<KeyValuePair<string, string>> extentViews = null;
+		private static Dictionary<string, DbMappingView> extentViews = null;
 		private readonly static object lockObject = new object();
+
+		public override string MappingHashValue { get { return "<#= mappingItemCollection.ComputeMappingHashValue() #>"; } }
 
         /// <Summary>
         /// The constructor stores the views for the extents and also the hash values generated based on the metadata and mapping closure and views.
         /// </Summary>
 		public <#= viewClassName #>()
 		{
-            this.EdmEntityContainerName = "<#= viewGroup.ModelContainerName #>";
-            this.StoreEntityContainerName = "<#= viewGroup.StoreContainerName #>";
-            this.HashOverMappingClosure = "<#= viewGroup.MappingHash #>";
-            this.ViewCount = <#= viewGroup.Views.Count() #>;
 		}
 
 		/// <Summary>
         /// The method returns the view for the index given.
         /// </Summary>
-        protected override KeyValuePair<string, string> GetViewAt(int index)
+        public override DbMappingView GetView(EntitySetBase extent)
         {
 			// do not lock if views are loaded
 			if (extentViews == null)
@@ -115,12 +116,12 @@ namespace Edm_EntityMappingGeneratedViews
 				}
 			}
 
-			return extentViews[index];
+			return extentViews[GetExtentFullName(extent)];
         }
 
 		private static void LoadViews()
 		{
-			extentViews = new List<KeyValuePair<string, string>>();
+			extentViews = new Dictionary<string, DbMappingView>();
 
 			using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("<#= 
 			(string)GetTemplateProjectItem().ContainingProject.Properties.Item("DefaultNamespace").Value#>.<#=
@@ -129,9 +130,14 @@ namespace Edm_EntityMappingGeneratedViews
 			{
 				while (reader.ReadToFollowing("view"))
 				{
-					extentViews.Add(new KeyValuePair<string, string>(reader["extent"], reader.ReadElementContentAsString()));
+					extentViews.Add(reader["extent"], new DbMappingView(reader.ReadElementContentAsString()));
 				}
 			}
+		}
+
+		private static string GetExtentFullName(EntitySetBase entitySet)
+		{
+			return string.Format("{0}.{1}", entitySet.EntityContainer.Name, entitySet.Name);
 		}
 	}
 }
@@ -177,7 +183,10 @@ namespace Edm_EntityMappingGeneratedViews
 
 		using(var writer = XmlWriter.Create(ms))
 		{
-			EdmxWriter.WriteEdmx((DbContext)Activator.CreateInstance(contextType), writer);
+			using(var context = (DbContext)Activator.CreateInstance(contextType))
+			{
+			    EdmxWriter.WriteEdmx(context, writer);
+			}
 		}
 
 		ms.Position = 0;
@@ -211,17 +220,17 @@ namespace Edm_EntityMappingGeneratedViews
 		return new StorageMappingItemCollection(edmItemCollection, storeItemCollection, new XmlReader[] { mslReader });
 	}
 
-	private void SaveViews(ContainerMappingViewGroup viewGroup)
+	private void SaveViews(Dictionary<EntitySetBase, DbMappingView> views)
 	{
 		var embeddedViewsFileName = Path.ChangeExtension(Host.TemplateFile, "xml");
 		using(var writer = XmlWriter.Create(embeddedViewsFileName, new XmlWriterSettings { Indent = true }))
 		{
 			writer.WriteStartElement("views");
-			foreach(var kvp in viewGroup.Views)
+			foreach(var kvp in views)
 			{
 				writer.WriteStartElement("view");
 				writer.WriteAttributeString("extent", GetExtentFullName(kvp.Key));
-				writer.WriteCData(kvp.Value);
+				writer.WriteCData(kvp.Value.EntitySql);
 				writer.WriteEndElement();
 			}
 
@@ -231,7 +240,7 @@ namespace Edm_EntityMappingGeneratedViews
 		AddViewsToProject(embeddedViewsFileName);
 	}
 
-	private string GetExtentFullName(EntitySetBase entitySet)
+	private static string GetExtentFullName(EntitySetBase entitySet)
 	{
 		return string.Format("{0}.{1}", entitySet.EntityContainer.Name, entitySet.Name);
 	}
