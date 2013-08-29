@@ -17,7 +17,6 @@ Usage:
 #>
 <#@ template debug="false" hostspecific="true" language="C#" #>
 <#@ output extension=".cs" #>
-<#@ assembly name="$(TargetPath)"#>
 <#@ assembly name="$(ProjectDir)$(OutDir)EntityFramework.dll"#>
 <#@ import namespace="System.Collections.Generic" #>
 <#@ import namespace="System.Data.Entity" #>
@@ -43,10 +42,11 @@ Usage:
 		AppDomain.CurrentDomain.SetData("APP_CONFIG_FILE", configFilePath);
 	}
 
+	LoadTargetAssembly();
+
 	var contextType = GetContextType(GetContextTypeName());
- 
-	var mappingItemCollection = 
-		GetMappingItemCollection(GetEdmx(contextType));
+
+	var mappingItemCollection = GetMappingItemCollection(contextType);
 
 	IList<EdmSchemaError> errors = new List<EdmSchemaError>();
 	var views = mappingItemCollection.GenerateViews(errors);
@@ -82,28 +82,28 @@ namespace Edm_EntityMappingGeneratedViews
 	using System.Xml;
 	using System.Xml.Linq;
 
-    /// <Summary>
-    /// The type contains views for EntitySets and AssociationSets that were generated at design time.
-    /// </Summary>
-    public sealed class <#= viewClassName #> : DbMappingViewCache
+	/// <Summary>
+	/// The type contains views for EntitySets and AssociationSets that were generated at design time.
+	/// </Summary>
+	public sealed class <#= viewClassName #> : DbMappingViewCache
 	{
 		private static Dictionary<string, DbMappingView> extentViews = null;
 		private readonly static object lockObject = new object();
 
 		public override string MappingHashValue { get { return "<#= mappingItemCollection.ComputeMappingHashValue() #>"; } }
 
-        /// <Summary>
-        /// The constructor stores the views for the extents and also the hash values generated based on the metadata and mapping closure and views.
-        /// </Summary>
+		/// <Summary>
+		/// The constructor stores the views for the extents and also the hash values generated based on the metadata and mapping closure and views.
+		/// </Summary>
 		public <#= viewClassName #>()
 		{
 		}
 
 		/// <Summary>
-        /// The method returns the view for the index given.
-        /// </Summary>
-        public override DbMappingView GetView(EntitySetBase extent)
-        {
+		/// The method returns the view for the index given.
+		/// </Summary>
+		public override DbMappingView GetView(EntitySetBase extent)
+		{
 			// do not lock if views are loaded
 			if (extentViews == null)
 			{
@@ -116,8 +116,10 @@ namespace Edm_EntityMappingGeneratedViews
 				}
 			}
 
-			return extentViews[GetExtentFullName(extent)];
-        }
+			DbMappingView view;
+			extentViews.TryGetValue(GetExtentFullName(extent), out view);
+			return view;
+		}
 
 		private static void LoadViews()
 		{
@@ -142,6 +144,11 @@ namespace Edm_EntityMappingGeneratedViews
 	}
 }
 <#+
+	private void LoadTargetAssembly()
+	{
+		Assembly.LoadFile(GetTargetAssemblyPath());
+	}
+
 	private string GetContextTypeName()
 	{
 		var templateFileName = Path.GetFileNameWithoutExtension(Host.TemplateFile);
@@ -177,47 +184,11 @@ namespace Edm_EntityMappingGeneratedViews
 			"Could not find the context type. Make sure the template name is using convention '{ContextTypeName}.Views.tt'");
 	}
 
-	private XDocument GetEdmx(Type contextType)
-	{		
-		var ms = new MemoryStream();
-
-		using(var writer = XmlWriter.Create(ms))
-		{
-			using(var context = (DbContext)Activator.CreateInstance(contextType))
-			{
-			    EdmxWriter.WriteEdmx(context, writer);
-			}
-		}
-
-		ms.Position = 0;
-
-		return XDocument.Load(ms);
-	}
-
-	private void SplitEdmx(XDocument edmx, out XmlReader csdlReader, out XmlReader ssdlReader, out XmlReader mslReader)
+	private StorageMappingItemCollection GetMappingItemCollection(Type contextType)
 	{
-		// xml namespace agnostic to make it work with any version of Entity Framework
-        var edmxNs = edmx.Root.Name.Namespace;
-
-        var storageModels = edmx.Descendants(edmxNs + "StorageModels").Single();
-        var conceptualModels = edmx.Descendants(edmxNs + "ConceptualModels").Single();
-        var mappings = edmx.Descendants(edmxNs + "Mappings").Single();
-
-        ssdlReader = storageModels.Elements().Single(e => e.Name.LocalName == "Schema").CreateReader();
-        csdlReader = conceptualModels.Elements().Single(e => e.Name.LocalName == "Schema").CreateReader();
-        mslReader = mappings.Elements().Single(e => e.Name.LocalName == "Mapping").CreateReader();
-	}
-
-	private StorageMappingItemCollection GetMappingItemCollection(XDocument edmx)
-	{
-		// extract csdl, ssdl and msl artifacts from the Edmx
-		XmlReader csdlReader, ssdlReader, mslReader;
-		SplitEdmx(edmx, out csdlReader, out ssdlReader, out mslReader);
-
-		// Initialize item collections
-		var edmItemCollection = new EdmItemCollection(new XmlReader[] { csdlReader });
-		var storeItemCollection = new StoreItemCollection(new XmlReader[] { ssdlReader });
-		return new StorageMappingItemCollection(edmItemCollection, storeItemCollection, new XmlReader[] { mslReader });
+		var contextInfo = new DbContextInfo(contextType);
+		var context = contextInfo.CreateInstance();
+		return (StorageMappingItemCollection)((IObjectContextAdapter)context).ObjectContext.MetadataWorkspace.GetItemCollection(DataSpace.CSSpace);
 	}
 
 	private void SaveViews(Dictionary<EntitySetBase, DbMappingView> views)
@@ -245,6 +216,16 @@ namespace Edm_EntityMappingGeneratedViews
 		return string.Format("{0}.{1}", entitySet.EntityContainer.Name, entitySet.Name);
 	}
 
+	private string GetTargetAssemblyPath()
+	{
+		var project = GetTemplateProjectItem().ContainingProject;
+
+		return Path.Combine(
+			project.Properties.Item("FullPath").Value.ToString(),
+			project.ConfigurationManager.ActiveConfiguration.Properties.Item("OutputPath").Value.ToString(),
+			project.Properties.Item("OutputFileName").Value.ToString());
+	}
+
 	private string GetConfigFilePath()
 	{
 		var project = GetTemplateProjectItem().ContainingProject;
@@ -260,7 +241,7 @@ namespace Edm_EntityMappingGeneratedViews
 	private void AddViewsToProject(string filePath)
 	{
 		var projectItem = GetTemplateProjectItem().ProjectItems.AddFromFile(filePath);
-		projectItem.Properties.Item("BuildAction").Value = /*prjBuildActionEmbeddedResource*/ 3;		
+		projectItem.Properties.Item("BuildAction").Value = /*prjBuildActionEmbeddedResource*/ 3;
 	}
 
 	private EnvDTE.ProjectItem GetTemplateProjectItem()
