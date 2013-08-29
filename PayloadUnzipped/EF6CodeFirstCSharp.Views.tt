@@ -1,4 +1,5 @@
-﻿<#
+﻿<#@ CleanupBehavior Processor="T4VSHost" CleanupAfterProcessingTemplate="true" #>
+<#
 /*
 Copyright (c) Pawel Kadluczka. All rights reserved.
 
@@ -146,7 +147,7 @@ namespace Edm_EntityMappingGeneratedViews
 <#+
 	private void LoadTargetAssembly()
 	{
-		Assembly.LoadFile(GetTargetAssemblyPath());
+		Assembly.Load(File.ReadAllBytes(GetTargetAssemblyPath()));
 	}
 
 	private string GetContextTypeName()
