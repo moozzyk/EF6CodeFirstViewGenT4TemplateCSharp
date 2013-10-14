@@ -1,5 +1,4 @@
-﻿<#@ CleanupBehavior Processor="T4VSHost" CleanupAfterProcessingTemplate="true" #>
-<#
+﻿<#
 /*
 Copyright (c) Pawel Kadluczka. All rights reserved.
 
@@ -18,50 +17,52 @@ Usage:
 #>
 <#@ template debug="false" hostspecific="true" language="C#" #>
 <#@ output extension=".cs" #>
-<#@ assembly name="$(ProjectDir)$(OutDir)EntityFramework.dll"#>
+<#@ assembly name="$(TargetPath)"#>
 <#@ import namespace="System.Collections.Generic" #>
-<#@ import namespace="System.Data.Entity" #>
-<#@ import namespace="System.Data.Entity.Core" #>
-<#@ import namespace="System.Data.Entity.Core.Metadata.Edm" #>
-<#@ import namespace="System.Data.Entity.Core.Mapping" #>
-<#@ import namespace="System.Data.Entity.Infrastructure.MappingViews" #>
-<#@ import namespace="System.Data.Entity.Core.Mapping.ViewGeneration" #>
-<#@ import namespace="System.Data.Entity.Infrastructure" #>
 <#@ import namespace="System.IO" #>
 <#@ import namespace="System.Linq" #>
 <#@ import namespace="System.Reflection" #>
+<#@ import namespace="System.Text" #>
 <#@ import namespace="System.Xml" #>
 <#@ import namespace="System.Xml.Linq" #>
 <#@ assembly name="System.Core" #>
 <#@ assembly name="System.Xml" #>
 <#@ assembly name="System.Xml.Linq" #>
 <#@ assembly name="EnvDTE" #>
+<#@ assembly name="Microsoft.CSharp" #>
 <# 
 	var configFilePath = GetConfigFilePath();
 	if (configFilePath != null)
 	{
 		AppDomain.CurrentDomain.SetData("APP_CONFIG_FILE", configFilePath);
 	}
-
-	LoadTargetAssembly();
-
+	
 	var contextType = GetContextType(GetContextTypeName());
+	var efAssembly = GetEfAssembly(contextType);
 
-	var mappingItemCollection = GetMappingItemCollection(contextType);
+	dynamic mappingItemCollection = 
+		GetMappingItemCollection(efAssembly, GetEdmx(efAssembly, contextType));
 
-	IList<EdmSchemaError> errors = new List<EdmSchemaError>();
-	var views = mappingItemCollection.GenerateViews(errors);
+	dynamic errors = 
+		Activator.CreateInstance(
+			typeof(List<>).MakeGenericType(efAssembly.GetType("System.Data.Entity.Core.Metadata.Edm.EdmSchemaError")));
+
+	dynamic views = mappingItemCollection.GenerateViews(errors);
 
 	if (errors != null && errors.Count > 0)
 	{
-		return string.Join(
-			"\r\n",
-			errors.Select(
-				e => string.Format("{0} {1}: {2}", e.Severity, e.ErrorCode, e.Message).ToArray()));
+		var errorString = new StringBuilder();
+
+		foreach (dynamic e in errors)
+		{
+			errorString.AppendLine(string.Format("{0} {1}: {2}", e.Severity, e.ErrorCode, e.Message));
+		}
+
+		Error(errorString.ToString());
 	}
 
 	// if no errors CodeFirst always generates just one EntityContainer
-	SaveViews(views);
+	SaveViews(mappingItemCollection.ComputeMappingHashValue(), views);
 
 	var viewClassName = "ViewsForBaseEntitySets" + Guid.NewGuid().ToString("N");
 #>
@@ -145,10 +146,6 @@ namespace Edm_EntityMappingGeneratedViews
 	}
 }
 <#+
-	private void LoadTargetAssembly()
-	{
-		Assembly.Load(File.ReadAllBytes(GetTargetAssemblyPath()));
-	}
 
 	private string GetContextTypeName()
 	{
@@ -164,7 +161,7 @@ namespace Edm_EntityMappingGeneratedViews
 		return templateFileName.Substring(0, dotPosition);
 	}
 
-	private Type GetContextType(string contextTypeName)
+	private static Type GetContextType(string contextTypeName)
 	{
 		foreach(var assembly in AppDomain.CurrentDomain.GetAssemblies().Where(a => !a.IsDynamic))
 		{
@@ -172,10 +169,11 @@ namespace Edm_EntityMappingGeneratedViews
 								.GetTypes()
 								.AsEnumerable()
 								.FirstOrDefault(
-									t => t.Name == contextTypeName && 
-									typeof(DbContext).IsAssignableFrom(t));
+									t => 
+										t.Name == contextTypeName && 
+										GetDbContextType(t.BaseType) != null);
 
-			if(contextType != null )
+			if(contextType != null)
 			{
 				return contextType;
 			}
@@ -185,20 +183,101 @@ namespace Edm_EntityMappingGeneratedViews
 			"Could not find the context type. Make sure the template name is using convention '{ContextTypeName}.Views.tt'");
 	}
 
-	private StorageMappingItemCollection GetMappingItemCollection(Type contextType)
+	private static Type GetDbContextType(Type contextType)
 	{
-		var contextInfo = new DbContextInfo(contextType);
-		var context = contextInfo.CreateInstance();
-		return (StorageMappingItemCollection)((IObjectContextAdapter)context).ObjectContext.MetadataWorkspace.GetItemCollection(DataSpace.CSSpace);
+		while((contextType = contextType.BaseType) != null)
+		{
+			if(contextType.FullName == "System.Data.Entity.DbContext" && contextType.Assembly.FullName.StartsWith("EntityFramework"))
+			{
+				return contextType;
+			}
+		}
+
+		return null;
 	}
 
-	private void SaveViews(Dictionary<EntitySetBase, DbMappingView> views)
+	private static Assembly GetEfAssembly(Type contextType)
+	{
+		var dbContextType = GetDbContextType(contextType);
+
+		if(dbContextType != null)
+		{
+			return dbContextType.Assembly;
+		}
+		
+		throw new InvalidOperationException("Cannot find DbContextType.");
+	}
+
+	private XDocument GetEdmx(Assembly efAssembly, Type contextType)
+	{		
+		using(var ms = new MemoryStream())
+		{
+			using(var writer = XmlWriter.Create(ms))
+			{
+				using(var context = (IDisposable)Activator.CreateInstance(contextType))
+				{								
+					var writeEdmxMethod =  
+						efAssembly
+							.GetType("System.Data.Entity.Infrastructure.EdmxWriter")
+							.GetMethod("WriteEdmx", new[] { efAssembly.GetType("System.Data.Entity.DbContext"), typeof(XmlWriter)});
+							
+					writeEdmxMethod.Invoke(null, new [] { context, writer});
+				}
+			}
+
+			ms.Position = 0;
+
+			return XDocument.Load(ms);
+		}
+	}
+
+	private void SplitEdmx(XDocument edmx, out XmlReader csdlReader, out XmlReader ssdlReader, out XmlReader mslReader)
+	{
+		// xml namespace agnostic to make it work with any version of Entity Framework
+        var edmxNs = edmx.Root.Name.Namespace;
+
+        var storageModels = edmx.Descendants(edmxNs + "StorageModels").Single();
+        var conceptualModels = edmx.Descendants(edmxNs + "ConceptualModels").Single();
+        var mappings = edmx.Descendants(edmxNs + "Mappings").Single();
+
+        ssdlReader = storageModels.Elements().Single(e => e.Name.LocalName == "Schema").CreateReader();
+        csdlReader = conceptualModels.Elements().Single(e => e.Name.LocalName == "Schema").CreateReader();
+        mslReader = mappings.Elements().Single(e => e.Name.LocalName == "Mapping").CreateReader();
+	}
+
+	private dynamic /*StorageMappingItemCollection*/ GetMappingItemCollection(Assembly efAssembly, XDocument edmx)
+	{
+		// extract csdl, ssdl and msl artifacts from the Edmx
+		XmlReader csdlReader, ssdlReader, mslReader;
+		SplitEdmx(edmx, out csdlReader, out ssdlReader, out mslReader);
+
+		// Initialize item collections
+		var edmItemCollection = 
+			Activator.CreateInstance(
+				efAssembly.GetType("System.Data.Entity.Core.Metadata.Edm.EdmItemCollection"), 
+				new[] { csdlReader }.AsEnumerable<XmlReader>());
+
+		var storeItemCollection = 
+			Activator.CreateInstance(
+				efAssembly.GetType("System.Data.Entity.Core.Metadata.Edm.StoreItemCollection"), 
+				new[] { ssdlReader }.AsEnumerable<XmlReader>());
+
+		var mappingItemCollectionCtor = 
+			efAssembly.GetType("System.Data.Entity.Core.Mapping.StorageMappingItemCollection")
+			.GetConstructor(new[] { edmItemCollection.GetType(), storeItemCollection.GetType(), typeof(IEnumerable<XmlReader>) });
+
+		return mappingItemCollectionCtor
+			.Invoke(new object[] { edmItemCollection, storeItemCollection, new[] {mslReader}.AsEnumerable<XmlReader>()});
+	}
+	
+	private void SaveViews(string mappingHashValue, /*Dictionary<EntitySetBase, DbMappingView>*/ dynamic views)
 	{
 		var embeddedViewsFileName = Path.ChangeExtension(Host.TemplateFile, "xml");
 		using(var writer = XmlWriter.Create(embeddedViewsFileName, new XmlWriterSettings { Indent = true }))
 		{
 			writer.WriteStartElement("views");
-			foreach(var kvp in views)
+			writer.WriteAttributeString("MappingHash", mappingHashValue);
+			foreach(dynamic kvp in views)
 			{
 				writer.WriteStartElement("view");
 				writer.WriteAttributeString("extent", GetExtentFullName(kvp.Key));
@@ -212,19 +291,9 @@ namespace Edm_EntityMappingGeneratedViews
 		AddViewsToProject(embeddedViewsFileName);
 	}
 
-	private static string GetExtentFullName(EntitySetBase entitySet)
+	private static string GetExtentFullName(/*EntitySetBase*/ dynamic entitySet)
 	{
 		return string.Format("{0}.{1}", entitySet.EntityContainer.Name, entitySet.Name);
-	}
-
-	private string GetTargetAssemblyPath()
-	{
-		var project = GetTemplateProjectItem().ContainingProject;
-
-		return Path.Combine(
-			project.Properties.Item("FullPath").Value.ToString(),
-			project.ConfigurationManager.ActiveConfiguration.Properties.Item("OutputPath").Value.ToString(),
-			project.Properties.Item("OutputFileName").Value.ToString());
 	}
 
 	private string GetConfigFilePath()
