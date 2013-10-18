@@ -38,6 +38,7 @@ Usage:
 	}
 	
 	var contextType = GetContextType(GetContextTypeName());
+
 	var efAssembly = GetEfAssembly(contextType);
 
 	dynamic mappingItemCollection = 
@@ -171,7 +172,7 @@ namespace Edm_EntityMappingGeneratedViews
 								.FirstOrDefault(
 									t => 
 										t.Name == contextTypeName && 
-										GetDbContextType(t.BaseType) != null);
+										GetDbContextType(t) != null);
 
 			if(contextType != null)
 			{
@@ -209,7 +210,7 @@ namespace Edm_EntityMappingGeneratedViews
 	}
 
 	private XDocument GetEdmx(Assembly efAssembly, Type contextType)
-	{		
+	{
 		using(var ms = new MemoryStream())
 		{
 			using(var writer = XmlWriter.Create(ms))
