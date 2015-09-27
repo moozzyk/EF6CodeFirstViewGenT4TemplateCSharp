@@ -25,16 +25,19 @@ Usage:
 <#@ import namespace="System.Text" #>
 <#@ import namespace="System.Xml" #>
 <#@ import namespace="System.Xml.Linq" #>
+<#@ import namespace="System.Configuration" #>
 <#@ assembly name="System.Core" #>
 <#@ assembly name="System.Xml" #>
 <#@ assembly name="System.Xml.Linq" #>
 <#@ assembly name="EnvDTE" #>
 <#@ assembly name="Microsoft.CSharp" #>
+<#@ assembly name="System.Configuration"#>
 <# 
 	var configFilePath = GetConfigFilePath();
 	if (configFilePath != null)
 	{
 		AppDomain.CurrentDomain.SetData("APP_CONFIG_FILE", configFilePath);
+		ResetConfigMechanism();
 	}
 	
 	var contextType = GetContextType(GetContextTypeName());
@@ -319,5 +322,23 @@ namespace Edm_EntityMappingGeneratedViews
 	{
 		var dte = (EnvDTE.DTE)((IServiceProvider)Host).GetService(typeof(EnvDTE.DTE));
 		return dte.Solution.FindProjectItem(Host.TemplateFile);
+	}
+
+	// http://stackoverflow.com/a/6151688/1168070
+	private static void ResetConfigMechanism()
+	{
+		typeof(ConfigurationManager)
+			.GetField("s_initState", BindingFlags.NonPublic | BindingFlags.Static)
+			.SetValue(null, 0);
+
+		typeof(ConfigurationManager)
+			.GetField("s_configSystem", BindingFlags.NonPublic | BindingFlags.Static)
+			.SetValue(null, null);
+
+		typeof(ConfigurationManager).Assembly.GetTypes()
+			.Where(x => x.FullName == "System.Configuration.ClientConfigPaths")
+			.First()
+			.GetField("s_current", BindingFlags.NonPublic | BindingFlags.Static)
+			.SetValue(null, null);
 	}
 #>
