@@ -131,9 +131,7 @@ namespace Edm_EntityMappingGeneratedViews
 		{
 			extentViews = new Dictionary<string, DbMappingView>();
 
-			using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("<#= 
-			(string)GetTemplateProjectItem().ContainingProject.Properties.Item("DefaultNamespace").Value#>.<#=
-			Path.GetFileName(Path.ChangeExtension(Host.TemplateFile, "xml"))#>"))
+			using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("<#=GetManifestResourceName()#>"))
 			using (var reader = XmlReader.Create(stream))
 			{
 				while (reader.ReadToFollowing("view"))
@@ -322,6 +320,19 @@ namespace Edm_EntityMappingGeneratedViews
 	{
 		var dte = (EnvDTE.DTE)((IServiceProvider)Host).GetService(typeof(EnvDTE.DTE));
 		return dte.Solution.FindProjectItem(Host.TemplateFile);
+	}
+
+	private string GetManifestResourceName()
+	{
+		var project = GetTemplateProjectItem().ContainingProject;
+		var projectNamespace = project.Properties.Item("DefaultNamespace").Value.ToString();
+		var projectPathname = project.Properties.Item("FullPath").Value.ToString();
+
+		var xmlPathName = Path.ChangeExtension(Host.TemplateFile, "xml");
+		xmlPathName = xmlPathName.Replace(projectPathname, string.Empty);
+		xmlPathName = xmlPathName.Replace("\\", ".");
+
+		return projectNamespace + "." + xmlPathName;
 	}
 
 	// http://stackoverflow.com/a/6151688/1168070
